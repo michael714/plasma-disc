@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Plasma Disc</title>
+<meta name="description" content="A giant web-based plasma globe. Touch or click to bend the arcs, enable sound to make it pulse with music, cast it to any TV.">
+<meta name="theme-color" content="#000000">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle at 50% 50%, #150022 0%, #06000c 55%, #000000 100%);
+  }
+  canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  #ui {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 18px;
+    z-index: 10;
+    transition: opacity 0.6s ease;
+    pointer-events: none;
+  }
+  #ui.visible { pointer-events: auto; }
+  #ui button {
+    pointer-events: auto;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+    color: #d9c8ff;
+    background: rgba(20, 4, 40, 0.55);
+    border: 1px solid rgba(180, 140, 255, 0.35);
+    backdrop-filter: blur(6px);
+    border-radius: 999px;
+    padding: 10px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.2s, border-color 0.2s, transform 0.1s;
+  }
+  #ui button:hover { background: rgba(60, 20, 100, 0.7); border-color: rgba(200, 160, 255, 0.6); }
+  #ui button:active { transform: scale(0.96); }
+  #ui button.active { background: rgba(120, 40, 200, 0.55); border-color: #b388ff; color: #fff; }
+  #ui button svg { width: 15px; height: 15px; }
+
+  #hint {
+    position: fixed;
+    bottom: 26px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    color: rgba(216, 190, 255, 0.55);
+    letter-spacing: 0.03em;
+    pointer-events: none;
+    transition: opacity 0.8s ease;
+    z-index: 10;
+  }
+
+  #fileInput { display: none; }
+
+  .fade-hidden { opacity: 0 !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="plasma"></canvas>
+</div>
+
+<div id="ui" class="visible">
+  <button id="soundBtn" title="React to sound (microphone)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    <span>Sound</span>
+  </button>
+  <button id="fileBtn" title="Play a music file">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15V6M18.5 18a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5ZM21 6l-12 2v9M6.5 20a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Z"/></svg>
+    <span>Music</span>
+  </button>
+  <button id="fullscreenBtn" title="Fullscreen (best for casting to a TV)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+    <span>Fullscreen</span>
+  </button>
+</div>
+
+<input type="file" id="fileInput" accept="audio/*">
+<audio id="audioEl" loop></audio>
+
+<div id="hint">touch or move your cursor near the glass &nbsp;·&nbsp; tap Sound to pulse with music in the room</div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ----------------------------------------------------------------
+     Canvas / sizing
+  ---------------------------------------------------------------- */
+  const canvas = document.getElementById('plasma');
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let cx = 0, cy = 0, R = 0; // disc center + radius in CSS px
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    cx = W / 2;
+    cy = H / 2;
+    R = Math.min(W, H) * 0.46;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* ----------------------------------------------------------------
+     Color ramp: green core -> orange/red -> blue rim (matches a
+     real plasma globe's three concentric color bands)
+  ---------------------------------------------------------------- */
+  const STOPS = [
+    { t: 0.00, c: [255, 255, 255] }, // white-hot electrode
+    { t: 0.10, c: [173, 255, 130] }, // bright green
+    { t: 0.30, c: [110, 230, 90]  }, // green
+    { t: 0.42, c: [255, 190, 60]  }, // amber transition
+    { t: 0.55, c: [255, 90, 40]   }, // red/orange
+    { t: 0.72, c: [255, 130, 90]  }, // red -> blue transition
+    { t: 0.85, c: [90, 140, 255]  }, // blue
+    { t: 1.00, c: [190, 220, 255] }, // pale blue rim
+  ];
+  function colorAt(t) {
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 0; i < STOPS.length - 1; i++) {
+      const a = STOPS[i], b = STOPS[i + 1];
+      if (t >= a.t && t <= b.t) {
+        const f = (t - a.t) / (b.t - a.t || 1);
+        return [
+          a.c[0] + (b.c[0] - a.c[0]) * f,
+          a.c[1] + (b.c[1] - a.c[1]) * f,
+          a.c[2] + (b.c[2] - a.c[2]) * f,
+        ];
+      }
+    }
+    return STOPS[STOPS.length - 1].c;
+  }
+
+  /* ----------------------------------------------------------------
+     Pointer / touch tracking — bolts bend to meet the fingertip
+  ---------------------------------------------------------------- */
+  let pointerActive = false;
+  let pointerX = 0, pointerY = 0;
+  let pointerFade = 0; // eases in/out so the "lock on" isn't jarring
+
+  function setPointerFromEvent(clientX, clientY) {
+    pointerX = clientX;
+    pointerY = clientY;
+    pointerActive = true;
+    wakeUI();
+  }
+  canvas.addEventListener('pointerdown', e => setPointerFromEvent(e.clientX, e.clientY));
+  canvas.addEventListener('pointermove', e => { if (pointerActive || e.pressure > 0) setPointerFromEvent(e.clientX, e.clientY); });
+  window.addEventListener('pointermove', e => { if (e.pressure > 0) setPointerFromEvent(e.clientX, e.clientY); });
+  window.addEventListener('pointerup', () => { pointerActive = false; });
+  window.addEventListener('pointercancel', () => { pointerActive = false; });
+  window.addEventListener('mousemove', e => {
+    // gentle attraction even without pressing, like a hand hovering near the glass
+    const d = Math.hypot(e.clientX - cx, e.clientY - cy);
+    if (d < R * 1.15) setPointerFromEvent(e.clientX, e.clientY);
+    else pointerActive = false;
+  });
+  window.addEventListener('touchmove', e => {
+    if (e.touches && e.touches[0]) setPointerFromEvent(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  window.addEventListener('touchend', () => { pointerActive = false; });
+
+  /* ----------------------------------------------------------------
+     Audio reactivity — microphone (hears music in the room, like a
+     real plasma globe) or an optional local file
+  ---------------------------------------------------------------- */
+  let audioCtx = null, analyser = null, freqData = null, micStream = null;
+  let audioLevel = 0;      // smoothed overall energy 0..1
+  let audioBass = 0;       // smoothed low-band energy 0..1
+  let audioEnabled = false;
+
+  async function enableMic() {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setupAnalyser(audioCtx.createMediaStreamSource(micStream));
+      audioEnabled = true;
+      soundBtn.classList.add('active');
+    } catch (err) {
+      console.warn('Microphone unavailable:', err);
+      alert('Could not access the microphone. You can still use the Music button to load a file instead.');
+    }
+  }
+
+  function setupAnalyser(sourceNode) {
+    if (!analyser) {
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.75;
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+    }
+    sourceNode.connect(analyser);
+  }
+
+  function ensureAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  function sampleAudio() {
+    if (!analyser) { audioLevel *= 0.95; audioBass *= 0.95; return; }
+    analyser.getByteFrequencyData(freqData);
+    let sum = 0, bassSum = 0, bassN = Math.max(1, Math.floor(freqData.length * 0.15));
+    for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+    for (let i = 0; i < bassN; i++) bassSum += freqData[i];
+    const level = sum / freqData.length / 255;
+    const bass = bassSum / bassN / 255;
+    audioLevel += (level - audioLevel) * 0.25;
+    audioBass += (bass - audioBass) * 0.35;
+  }
+
+  const soundBtn = document.getElementById('soundBtn');
+  const fileBtn = document.getElementById('fileBtn');
+  const fileInput = document.getElementById('fileInput');
+  const audioEl = document.getElementById('audioEl');
+
+  soundBtn.addEventListener('click', () => {
+    ensureAudioCtx();
+    if (audioEnabled) {
+      audioEnabled = false;
+      soundBtn.classList.remove('active');
+      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+    } else {
+      enableMic();
+    }
+  });
+
+  fileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    ensureAudioCtx();
+    audioEl.src = URL.createObjectURL(f);
+    audioEl.play();
+    setupAnalyser(audioCtx.createMediaElementSource(audioEl));
+    analyser.connect(audioCtx.destination);
+    audioEnabled = true;
+    fileBtn.classList.add('active');
+  });
+
+  /* ----------------------------------------------------------------
+     Fullscreen
+  ---------------------------------------------------------------- */
+  const fsBtn = document.getElementById('fullscreenBtn');
+  fsBtn.addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+      fsBtn.classList.add('active');
+    } else {
+      document.exitFullscreen?.();
+      fsBtn.classList.remove('active');
+    }
+  });
+  document.addEventListener('fullscreenchange', () => {
+    fsBtn.classList.toggle('active', !!document.fullscreenElement);
+  });
+
+  /* ----------------------------------------------------------------
+     Auto-hide UI (so a TV/cast display shows a clean picture)
+  ---------------------------------------------------------------- */
+  const ui = document.getElementById('ui');
+  const hint = document.getElementById('hint');
+  let uiTimer = null;
+  function wakeUI() {
+    ui.classList.remove('fade-hidden');
+    hint.classList.remove('fade-hidden');
+    ui.classList.add('visible');
+    clearTimeout(uiTimer);
+    uiTimer = setTimeout(() => {
+      ui.classList.add('fade-hidden');
+      hint.classList.add('fade-hidden');
+    }, 4000);
+  }
+  window.addEventListener('mousemove', wakeUI);
+  window.addEventListener('pointerdown', wakeUI);
+  window.addEventListener('keydown', wakeUI);
+  wakeUI();
+
+  /* ----------------------------------------------------------------
+     Lightning generation — recursive midpoint displacement with
+     optional branching and an attraction target (the fingertip)
+  ---------------------------------------------------------------- */
+  function rand(min, max) { return min + Math.random() * (max - min); }
+
+  // Returns an array of {x,y,t} points from start to end, t = 0..1 progress
+  function buildBolt(x0, y0, x1, y1, t0, t1, roughness, depth, branches, attract) {
+    const pts = [{ x: x0, y: y0, t: t0 }];
+    subdivide(x0, y0, x1, y1, t0, t1, roughness, depth, pts, branches, attract);
+    pts.push({ x: x1, y: y1, t: t1 });
+    return pts;
+  }
+
+  function subdivide(x0, y0, x1, y1, t0, t1, roughness, depth, out, branches, attract) {
+    if (depth <= 0) return;
+    let mx = (x0 + x1) / 2;
+    let my = (y0 + y1) / 2;
+    const dx = x1 - x0, dy = y1 - y0;
+    const len = Math.hypot(dx, dy) || 1;
+    // perpendicular jitter
+    const nx = -dy / len, ny = dx / len;
+    const offset = rand(-1, 1) * roughness * len;
+    mx += nx * offset;
+    my += ny * offset;
+
+    // gentle pull toward the attraction point (fingertip), stronger near mid-depths
+    if (attract) {
+      const pull = attract.strength * (1 - Math.abs(0.5 - depth / attract.maxDepth) * 0.6);
+      mx += (attract.x - mx) * pull;
+      my += (attract.y - my) * pull;
+    }
+
+    const tm = (t0 + t1) / 2;
+    subdivide(x0, y0, mx, my, t0, tm, roughness * 0.72, depth - 1, out, branches, attract);
+    out.push({ x: mx, y: my, t: tm });
+    subdivide(mx, my, x1, y1, tm, t1, roughness * 0.72, depth - 1, out, branches, attract);
+
+    // occasional short side branch, dimmer, no further attraction
+    if (branches && depth > 2 && Math.random() < 0.16) {
+      const ang = Math.atan2(dy, dx) + rand(-0.9, 0.9);
+      const blen = len * rand(0.25, 0.55);
+      const bx = mx + Math.cos(ang) * blen;
+      const by = my + Math.sin(ang) * blen;
+      const branchPts = buildBolt(mx, my, bx, by, tm, Math.min(1, tm + 0.25), roughness * 0.9, depth - 2, false, null);
+      sideBranches.push(branchPts);
+    }
+  }
+
+  let sideBranches = [];
+
+  function strokeBoltPath(pts, widthMul, alphaMul, glowMul) {
+    if (pts.length < 2) return;
+    // core bright stroke, color varies along the path by radial fraction
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const t = (a.t + b.t) / 2;
+      const [r, g, bl] = colorAt(t);
+      const width = Math.max(0.6, (2.6 - t * 1.6) * widthMul);
+      ctx.strokeStyle = `rgba(${r|0},${g|0},${bl|0},${0.9 * alphaMul})`;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+
+  /* ----------------------------------------------------------------
+     Main animation loop
+  ---------------------------------------------------------------- */
+  const NUM_MAIN_BOLTS = 8;
+  let boltSeeds = [];
+  for (let i = 0; i < NUM_MAIN_BOLTS; i++) {
+    boltSeeds.push({ baseAngle: (i / NUM_MAIN_BOLTS) * Math.PI * 2, wob: rand(0, Math.PI * 2) });
+  }
+
+  let t0 = performance.now();
+  let frame = 0;
+
+  function draw(now) {
+    const dt = Math.min(0.05, (now - t0) / 1000);
+    t0 = now;
+    frame++;
+
+    sampleAudio();
+
+    // ease the pointer lock strength in/out for a smoother "reach"
+    pointerFade += ((pointerActive ? 1 : 0) - pointerFade) * 0.15;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // --- background disc glass + soft outer glow ---
+    ctx.save();
+    const outerGlow = 0.18 + audioLevel * 0.35;
+    const rg = ctx.createRadialGradient(cx, cy, R * 0.4, cx, cy, R * 1.35);
+    rg.addColorStop(0, `rgba(120,60,220,${outerGlow})`);
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, W, H);
+
+    // glass disc base
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(8,4,18,0.9)';
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, R * 0.006);
+    ctx.strokeStyle = 'rgba(210,190,255,0.35)';
+    ctx.stroke();
+    ctx.restore();
+
+    // clip everything below to the disc
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * 0.995, 0, Math.PI * 2);
+    ctx.clip();
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    const pulse = 1 + audioBass * 0.55 + Math.sin(now * 0.0015) * 0.03;
+
+    // --- soft colored zone glows (green core / red mid / blue rim) ---
+    const zoneGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * pulse);
+    zoneGlow.addColorStop(0.0, 'rgba(255,255,255,0.55)');
+    zoneGlow.addColorStop(0.12, 'rgba(140,255,120,0.32)');
+    zoneGlow.addColorStop(0.38, 'rgba(255,150,50,0.22)');
+    zoneGlow.addColorStop(0.6, 'rgba(255,60,50,0.16)');
+    zoneGlow.addColorStop(0.82, 'rgba(70,120,255,0.16)');
+    zoneGlow.addColorStop(1.0, 'rgba(140,180,255,0.05)');
+    ctx.fillStyle = zoneGlow;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fill();
+
+    // --- central electrode ---
+    const eR = R * (0.05 + audioBass * 0.03) * (1 + Math.sin(now * 0.006) * 0.08);
+    const eg = ctx.createRadialGradient(cx, cy, 0, cx, cy, eR * 4);
+    eg.addColorStop(0, 'rgba(255,255,255,0.95)');
+    eg.addColorStop(0.3, 'rgba(180,255,150,0.55)');
+    eg.addColorStop(1, 'rgba(180,255,150,0)');
+    ctx.fillStyle = eg;
+    ctx.beginPath();
+    ctx.arc(cx, cy, eR * 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // --- lightning bolts ---
+    sideBranches = [];
+    const intensity = 1 + audioLevel * 0.8 + audioBass * 0.6;
+    const attractStrength = 0.42 * pointerFade;
+    const attract = pointerFade > 0.01 ? {
+      x: pointerX, y: pointerY, strength: attractStrength, maxDepth: 6
+    } : null;
+
+    ctx.shadowBlur = 14 * intensity;
+
+    for (let i = 0; i < boltSeeds.length; i++) {
+      const seed = boltSeeds[i];
+      const wobble = Math.sin(now * 0.0011 + seed.wob) * 0.25;
+      const angle = seed.baseAngle + wobble + Math.sin(now * 0.0004 + i) * 0.15;
+
+      // if pointer is active, gently steer some bolts to converge toward it
+      let targetAngle = angle;
+      if (attract) {
+        const pAngle = Math.atan2(pointerY - cy, pointerX - cx);
+        let diff = pAngle - angle;
+        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+        if (Math.abs(diff) < Math.PI * 0.55) {
+          targetAngle = angle + diff * (0.5 * pointerFade);
+        }
+      }
+
+      const jitterR = R * (0.94 + rand(-0.04, 0.04));
+      const x1 = cx + Math.cos(targetAngle) * jitterR;
+      const y1 = cy + Math.sin(targetAngle) * jitterR;
+      const x0 = cx + Math.cos(angle) * eR * 1.5;
+      const y0 = cy + Math.sin(angle) * eR * 1.5;
+
+      const pts = buildBolt(x0, y0, x1, y1, 0, 1, 0.55, 6, true, attract);
+      strokeBoltPath(pts, 1.1 * intensity, 0.85, intensity);
+    }
+
+    // dedicated arc that reaches exactly to the fingertip, like real glass
+    if (attract && pointerFade > 0.05) {
+      const px = pointerX, py = pointerY;
+      const d = Math.hypot(px - cx, py - cy);
+      const clampedD = Math.min(d, R * 0.98);
+      const ang = Math.atan2(py - cy, px - cx);
+      const ex = cx + Math.cos(ang) * clampedD;
+      const ey = cy + Math.sin(ang) * clampedD;
+      const x0 = cx + Math.cos(ang) * eR * 1.5;
+      const y0 = cy + Math.sin(ang) * eR * 1.5;
+      const pts = buildBolt(x0, y0, ex, ey, 0, 1, 0.25, 6, true, null);
+      strokeBoltPath(pts, 1.6, pointerFade, 1.4);
+      // little bright flare at the touch point
+      const fg = ctx.createRadialGradient(ex, ey, 0, ex, ey, R * 0.06);
+      fg.addColorStop(0, `rgba(255,255,255,${0.8 * pointerFade})`);
+      fg.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = fg;
+      ctx.beginPath();
+      ctx.arc(ex, ey, R * 0.06, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // side branches
+    for (const b of sideBranches) strokeBoltPath(b, 0.6 * intensity, 0.5, 0.7);
+
+    ctx.shadowBlur = 0;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore(); // end clip
+
+    // subtle glass rim highlight
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    const rim = ctx.createRadialGradient(cx, cy, R * 0.85, cx, cy, R * 1.02);
+    rim.addColorStop(0, 'rgba(255,255,255,0)');
+    rim.addColorStop(1, 'rgba(220,200,255,0.25)');
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = Math.max(2, R * 0.01);
+    ctx.stroke();
+    ctx.restore();
+
+    requestAnimationFrame(draw);
+  }
+
+  requestAnimationFrame(draw);
+
+  // Try to resume audio context on first interaction (autoplay policies)
+  window.addEventListener('pointerdown', () => { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); }, { once: true });
+})();
+</script>
+</body>
+</html>
