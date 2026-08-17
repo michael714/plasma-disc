@@ -9,7 +9,7 @@ A giant, web-based plasma globe. Runs in any browser, scales to fill any screen 
 - Three concentric color bands — green core, red/orange middle, blue rim — matching a real plasma disc
 - Constantly re-branching "lightning" arcs drawn with recursive midpoint displacement, so they flicker and crackle like real plasma filaments
 - Move your cursor or touch the screen near the glass and the nearest arcs bend to reach it, just like touching a real globe
-- Tap **Sound** to grant microphone access and have the glow and arc intensity pulse with ambient music in the room, or tap **Music** to play a local audio file instead
+- Tap **Plasma Buzz** to hear the synthesized hum and crackle; **Microphone** makes the glow pulse with music in the room, or **Play a song** to load a local audio file
 - Tap **Fullscreen** for a clean, edge-to-edge picture — ideal when casting to a TV or large display
 - Pure HTML/CSS/JS, no build step, no dependencies — a single `index.html` file
 
