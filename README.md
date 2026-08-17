@@ -2,7 +2,7 @@
 
 A giant, web-based plasma globe. Runs in any browser, scales to fill any screen (great for casting to a TV), reacts to your touch/cursor the way a real plasma disc's arcs bend toward a fingertip, and can pulse along with music playing in the room via the microphone.
 
-**[Live demo](#)** — replace with your GitHub Pages URL once deployed (see below).
+**[Live demo](https://michael714.github.io/plasma-disc/)**
 
 ## Features
 
