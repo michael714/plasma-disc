@@ -1,0 +1,38 @@
+---
+description: Plasma Disc is a single-file static globe app — preserve audio, visuals, and GitHub Pages deploy
+alwaysApply: true
+---
+
+# Plasma Disc
+
+A self-contained plasma-globe page. No build step, no dependencies. GitHub Pages serves `index.html` at https://michael714.github.io/plasma-disc/.
+
+## Source of truth
+
+- Edit `index.html` in place. It is the live app.
+- Do not rewrite, "clean up," or replace it with a new HTML file. A previous rewrite dropped the generated Plasma Buzz audio.
+- Do not add a bundler, framework, or extra JS/CSS files unless explicitly asked.
+
+## Audio (do not collapse these)
+
+- **Plasma Buzz** is synthesized Web Audio (detuned oscillators + filtered noise). It is on by default and unlocks on first pointer/key gesture (autoplay policy).
+- Route buzz through `sfxMasterGain` → destination. **Never** connect it to `analyser`.
+- `analyser` is only for external music (microphone or a local file) so the visuals can pulse without the buzz feeding back into itself.
+- Keep `updateBuzz()` using `setTargetAtTime` glides, not stepped gain. Discrete clicks sound mechanical.
+
+```javascript
+// ❌ BAD — buzz drives the visual analyser
+sfxMasterGain.connect(analyser);
+
+// ✅ GOOD — music/mic only into analyser; buzz is a separate bus
+audioSource.connect(analyser);
+sfxMasterGain.connect(audioCtx.destination);
+```
+
+## Visuals
+
+Keep fingertip attraction (bolts bend toward pointer/touch), concentric color bands, and fullscreen/TV-cast friendly UI (controls auto-hide).
+
+## Deploy
+
+Push to `main`. `.github/workflows/deploy.yml` republishes Pages automatically. Do not switch Pages to "Deploy from a branch" unless asked.
