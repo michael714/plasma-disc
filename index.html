@@ -172,14 +172,61 @@
   const hint = document.getElementById('hint');
   const audioStatusEl = document.getElementById('audioStatus');
 
+  // ---------- Quality / low-power ----------
+  // Canvas 2D shadowBlur is one of the most expensive operations (Chromium
+  // often runs it on the CPU). Combined with a large backing store it made
+  // this unusable on a Raspberry Pi 400. Glow is faked with wider additive
+  // strokes instead. Weak hardware also drops resolution, bolt count,
+  // branches, and caps paint at ~30fps. Detection: start lite on ARM Linux
+  // (Pi OS Chromium), or drop to lite if the first couple of seconds of
+  // frames are consistently slow. Stay lite once entered — no bouncing.
+  const HIGH_Q = {
+    dprCap: 2,
+    maxCssPx: 0,
+    numBolts: 13,
+    mainDepth: 5,
+    branchDepth: 4,
+    maxBranches: 3,
+    drawTexture: true,
+    paintMinMs: 0,
+    haloPass: true
+  };
+  const LITE_Q = {
+    dprCap: 1,
+    maxCssPx: 800,
+    numBolts: 7,
+    mainDepth: 4,
+    branchDepth: 3,
+    maxBranches: 0,
+    drawTexture: false,
+    paintMinMs: 33,
+    haloPass: false
+  };
+
+  function looksLikeLowPower(){
+    const ua = navigator.userAgent || '';
+    const plat = navigator.platform || '';
+    const cores = navigator.hardwareConcurrency || 8;
+    if (cores > 0 && cores <= 2) return true;
+    if (/Raspberry/i.test(ua)) return true;
+    const armLinux = /Linux/i.test(ua) && /aarch64|armv[0-9]|arm64/i.test(ua + ' ' + plat);
+    return armLinux && !/Android/i.test(ua);
+  }
+
+  // ?lite in the URL forces lite mode (handy on a Pi if UA detection misses).
+  let liteMode = looksLikeLowPower() || new URLSearchParams(location.search).has('lite');
+  let q = liteMode ? LITE_Q : HIGH_Q;
+
   // ---------- Sizing: as large as possible within the viewport ----------
   let W = 0, H = 0, R = 0, CX = 0, CY = 0;
-  let DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let DPR = Math.min(window.devicePixelRatio || 1, q.dprCap);
 
   function resize(){
     const availW = window.innerWidth;
     const availH = window.innerHeight;
-    const size = Math.floor(Math.min(availW, availH) * 0.94);
+    let size = Math.floor(Math.min(availW, availH) * 0.94);
+    if (q.maxCssPx) size = Math.min(size, q.maxCssPx);
+    DPR = Math.min(window.devicePixelRatio || 1, q.dprCap);
     W = size; H = size;
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
@@ -188,6 +235,7 @@
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     CX = W / 2; CY = H / 2;
     R = W / 2 * 0.965;
+    canvas.dataset.quality = liteMode ? 'lite' : 'high';
     buildGlassTexture();
   }
   window.addEventListener('resize', resize);
@@ -195,6 +243,11 @@
   // ---------- Subtle glass hex/dot texture, drawn once to offscreen ----------
   let textureCanvas = document.createElement('canvas');
   function buildGlassTexture(){
+    if (!q.drawTexture){
+      textureCanvas.width = 1;
+      textureCanvas.height = 1;
+      return;
+    }
     textureCanvas.width = canvas.width;
     textureCanvas.height = canvas.height;
     const tctx = textureCanvas.getContext('2d');
@@ -308,12 +361,12 @@
       const start = {x:0, y:0};
       const end = {x: tx, y: ty};
       let pts = [start, end];
-      pts = subdivide(pts, 0.5, 10, 5);
+      pts = subdivide(pts, 0.5, 10, q.mainDepth);
       this.points = pts;
 
       // Branches: pick a few nodes along the path and grow shorter offshoots outward
       this.branches = [];
-      const branchCount = Math.floor(rand(1,4));
+      const branchCount = q.maxBranches <= 0 ? 0 : Math.floor(rand(1, q.maxBranches + 1));
       for (let b=0; b<branchCount; b++){
         const idx = Math.floor(rand(pts.length*0.25, pts.length*0.85));
         const from = pts[idx];
@@ -324,7 +377,7 @@
           x: from.x + Math.cos(outwardAngle)*branchLen,
           y: from.y + Math.sin(outwardAngle)*branchLen
         };
-        let bpts = subdivide([from, bEnd], 0.55, 8, 4);
+        let bpts = subdivide([from, bEnd], 0.55, 8, q.branchDepth);
         this.branches.push(bpts);
       }
     }
@@ -353,12 +406,11 @@
     ];
   }
 
-  const NUM_BOLTS = 13;
   let bolts = [];
   function initBolts(){
     bolts = [];
-    for (let i=0;i<NUM_BOLTS;i++){
-      bolts.push(new Bolt(i, NUM_BOLTS));
+    for (let i=0;i<q.numBolts;i++){
+      bolts.push(new Bolt(i, q.numBolts));
     }
   }
   initBolts();
@@ -635,55 +687,89 @@
 
   // ---------- Draw loop ----------
   let lastTime = performance.now();
-  let flickerTimers = new Array(NUM_BOLTS).fill(0);
+  let lastPaint = 0;
+  let flickerTimers = new Array(q.numBolts).fill(0);
   let pulseTimer = 0; // shared "beat" clock: fires a cluster of bolts + a buzz swell together
+  let perfWarmupUntil = 0;
+  let perfFrames = 0;
+  let perfLong = 0;
+  let perfDone = liteMode;
+
+  function enterLiteMode(){
+    if (liteMode) return;
+    liteMode = true;
+    q = LITE_Q;
+    perfDone = true;
+    initBolts();
+    flickerTimers = new Array(q.numBolts).fill(0);
+    resize();
+  }
+
+  function notePerf(now, dt){
+    if (liteMode || perfDone) return;
+    if (document.hidden){
+      perfWarmupUntil = 0;
+      perfFrames = 0;
+      perfLong = 0;
+      return;
+    }
+    if (!perfWarmupUntil) perfWarmupUntil = now + 900;
+    if (now < perfWarmupUntil) return;
+    perfFrames++;
+    if (dt > 32) perfLong++;
+    if (perfFrames >= 40){
+      perfDone = true;
+      if (perfLong / perfFrames >= 0.3) enterLiteMode();
+    }
+  }
 
   function drawBoltPath(points, colorFn, widthScale, alphaScale){
-    // Glow pass
+    if (!points || points.length < 2) return;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
+    ctx.shadowBlur = 0;
 
-    for (let pass=0; pass<2; pass++){
-      const isGlow = pass === 0;
-      ctx.beginPath();
-      ctx.moveTo(points[0].x + CX, points[0].y + CY);
-      for (let i=1;i<points.length;i++){
-        ctx.lineTo(points[i].x + CX, points[i].y + CY);
-      }
-      const midDist = Math.hypot(points[Math.floor(points.length/2)].x, points[Math.floor(points.length/2)].y);
-      const [r,g,b] = colorFn(midDist);
-      if (isGlow){
-        ctx.strokeStyle = `rgba(${r},${g},${b},${0.16*alphaScale})`;
-        ctx.lineWidth = (7 + 5*bassEnergy) * widthScale;
-        ctx.shadowBlur = 22 + 26*bassEnergy;
-        ctx.shadowColor = `rgba(${r},${g},${b},0.9)`;
-      } else {
-        ctx.strokeStyle = `rgba(${Math.min(255,r+15)},${Math.min(255,g+15)},${Math.min(255,b+15)},${0.92*alphaScale})`;
-        ctx.lineWidth = (1.4 + 1.1*bassEnergy) * widthScale;
-        ctx.shadowBlur = 6;
-        ctx.shadowColor = `rgba(${r},${g},${b},0.9)`;
-      }
-      ctx.stroke();
+    const path = new Path2D();
+    path.moveTo(points[0].x + CX, points[0].y + CY);
+    for (let i=1;i<points.length;i++){
+      path.lineTo(points[i].x + CX, points[i].y + CY);
     }
+    const mid = points[Math.floor(points.length/2)];
+    const midDist = Math.hypot(mid.x, mid.y);
+    const [r,g,b] = colorFn(midDist);
+
+    // Wide additive halo stands in for the old per-stroke shadowBlur.
+    if (q.haloPass){
+      ctx.strokeStyle = `rgba(${r},${g},${b},${0.09*alphaScale})`;
+      ctx.lineWidth = (16 + 10*bassEnergy) * widthScale;
+      ctx.stroke(path);
+    }
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.22*alphaScale})`;
+    ctx.lineWidth = (7 + 5*bassEnergy) * widthScale;
+    ctx.stroke(path);
+    ctx.strokeStyle = `rgba(${Math.min(255,r+15)},${Math.min(255,g+15)},${Math.min(255,b+15)},${0.92*alphaScale})`;
+    ctx.lineWidth = (1.4 + 1.1*bassEnergy) * widthScale;
+    ctx.stroke(path);
     ctx.restore();
   }
 
   function frame(now){
     const dt = Math.min(64, now - lastTime);
     lastTime = now;
+    notePerf(now, dt);
 
     // pointer influence eases in/out
     pointerFade += ((pointerActive?1:0) - pointerFade) * 0.12;
 
     // ---- Shared pulse clock ----
-    // Rather than trying to sync sound to every one of 13 independently
-    // timed bolts (which is what made the old per-bolt zaps feel clicky),
-    // a periodic "beat" forces a cluster of bolts to flash together and
-    // swells the buzz at that exact instant. Individual bolts still flicker
-    // on their own in between beats for organic texture, but the ear/eye
-    // both land on the same clearly-timed event, which reads as "in sync."
+    // Rather than trying to sync sound to every independently timed bolt
+    // (which is what made the old per-bolt zaps feel clicky), a periodic
+    // "beat" forces a cluster of bolts to flash together and swells the
+    // buzz at that exact instant. Individual bolts still flicker on their
+    // own in between beats for organic texture, but the ear/eye both land
+    // on the same clearly-timed event, which reads as "in sync."
     // Kept to a modest fraction of bolts and a moderate tempo (well under
     // ~3 flashes/sec at idle) so it stays a pleasant pulse, not a strobe.
     pulseTimer -= dt;
@@ -702,6 +788,23 @@
 
     readAudioEnergy();
     updateBuzz();
+
+    // Bolt lifetimes always tick, even when lite mode skips a paint.
+    for (let i=0;i<bolts.length;i++){
+      flickerTimers[i] -= dt;
+      const regenInterval = 90 + Math.random()*140 - bassEnergy*70;
+      if (flickerTimers[i] <= 0){
+        bolts[i].regenerate();
+        flickerTimers[i] = regenInterval;
+        maybeTriggerZapForBolt(bolts[i]);
+      }
+    }
+
+    if (q.paintMinMs && (now - lastPaint) < q.paintMinMs){
+      requestAnimationFrame(frame);
+      return;
+    }
+    lastPaint = now;
 
     ctx.clearRect(0,0,W,H);
 
@@ -722,13 +825,6 @@
     // Bolts
     for (let i=0;i<bolts.length;i++){
       const bolt = bolts[i];
-      flickerTimers[i] -= dt;
-      const regenInterval = 90 + Math.random()*140 - bassEnergy*70;
-      if (flickerTimers[i] <= 0){
-        bolt.regenerate();
-        flickerTimers[i] = regenInterval;
-        maybeTriggerZapForBolt(bolt);
-      }
       const alpha = 0.55 + Math.random()*0.45;
       drawBoltPath(bolt.points, (d)=>bolt.colorAt(d), 1, alpha);
       for (const bpts of bolt.branches){
@@ -766,8 +862,10 @@
     }
 
     // glass texture overlay
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.drawImage(textureCanvas, 0, 0, W, H);
+    if (q.drawTexture){
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.drawImage(textureCanvas, 0, 0, W, H);
+    }
     ctx.globalCompositeOperation = 'source-over';
 
     // subtle vignette / glass edge highlight
