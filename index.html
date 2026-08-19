@@ -174,15 +174,15 @@
 
   // ---------- Quality / low-power ----------
   // Canvas 2D shadowBlur is one of the most expensive operations (Chromium
-  // often runs it on the CPU). Combined with a large backing store it made
-  // this unusable on a Raspberry Pi 400. Glow is faked with wider additive
-  // strokes instead. Weak hardware also drops resolution, bolt count,
-  // branches, and caps paint at ~30fps. Detection: start lite on ARM Linux
-  // (Pi OS Chromium), or drop to lite if the first couple of seconds of
-  // frames are consistently slow. Stay lite once entered — no bouncing.
+  // often runs it on the CPU). Glow is faked with wider additive strokes
+  // instead. Lite keeps the globe the same on-screen size and most of the
+  // bolt character; it only lowers the backing-store resolution and trims
+  // density a little. Ultra is the emergency Pi fallback (fewer bolts, no
+  // branches, ~30fps) if lite still cannot hold frame time.
+  // ?lite or ?ultra in the URL forces that tier.
   const HIGH_Q = {
     dprCap: 2,
-    maxCssPx: 0,
+    maxBackingPx: 0,
     numBolts: 13,
     mainDepth: 5,
     branchDepth: 4,
@@ -193,14 +193,25 @@
   };
   const LITE_Q = {
     dprCap: 1,
-    maxCssPx: 800,
+    maxBackingPx: 960,
+    numBolts: 11,
+    mainDepth: 5,
+    branchDepth: 3,
+    maxBranches: 2,
+    drawTexture: true,
+    paintMinMs: 0,
+    haloPass: true
+  };
+  const ULTRA_Q = {
+    dprCap: 1,
+    maxBackingPx: 720,
     numBolts: 7,
     mainDepth: 4,
     branchDepth: 3,
     maxBranches: 0,
     drawTexture: false,
     paintMinMs: 33,
-    haloPass: false
+    haloPass: true
   };
 
   function looksLikeLowPower(){
@@ -213,9 +224,12 @@
     return armLinux && !/Android/i.test(ua);
   }
 
-  // ?lite in the URL forces lite mode (handy on a Pi if UA detection misses).
-  let liteMode = looksLikeLowPower() || new URLSearchParams(location.search).has('lite');
-  let q = liteMode ? LITE_Q : HIGH_Q;
+  const _qparams = new URLSearchParams(location.search);
+  let qualityName = 'high';
+  if (_qparams.has('ultra')) qualityName = 'ultra';
+  else if (_qparams.has('lite') || looksLikeLowPower()) qualityName = 'lite';
+  let q = qualityName === 'ultra' ? ULTRA_Q : qualityName === 'lite' ? LITE_Q : HIGH_Q;
+  let liteMode = qualityName !== 'high';
 
   // ---------- Sizing: as large as possible within the viewport ----------
   let W = 0, H = 0, R = 0, CX = 0, CY = 0;
@@ -224,18 +238,22 @@
   function resize(){
     const availW = window.innerWidth;
     const availH = window.innerHeight;
-    let size = Math.floor(Math.min(availW, availH) * 0.94);
-    if (q.maxCssPx) size = Math.min(size, q.maxCssPx);
+    const cssSize = Math.floor(Math.min(availW, availH) * 0.94);
     DPR = Math.min(window.devicePixelRatio || 1, q.dprCap);
-    W = size; H = size;
+    // Keep CSS size full-viewport; cap pixels drawn, not how big the disc looks.
+    if (q.maxBackingPx){
+      const maxDpr = q.maxBackingPx / cssSize;
+      if (DPR > maxDpr) DPR = maxDpr;
+    }
+    W = cssSize; H = cssSize;
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
-    canvas.width = Math.floor(W * DPR);
-    canvas.height = Math.floor(H * DPR);
+    canvas.width = Math.max(1, Math.floor(W * DPR));
+    canvas.height = Math.max(1, Math.floor(H * DPR));
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     CX = W / 2; CY = H / 2;
     R = W / 2 * 0.965;
-    canvas.dataset.quality = liteMode ? 'lite' : 'high';
+    canvas.dataset.quality = qualityName;
     buildGlassTexture();
   }
   window.addEventListener('resize', resize);
@@ -693,20 +711,20 @@
   let perfWarmupUntil = 0;
   let perfFrames = 0;
   let perfLong = 0;
-  let perfDone = liteMode;
+  let perfDone = qualityName === 'ultra';
 
-  function enterLiteMode(){
-    if (liteMode) return;
-    liteMode = true;
-    q = LITE_Q;
-    perfDone = true;
+  function applyQuality(nextQ, name){
+    if (qualityName === name) return;
+    q = nextQ;
+    qualityName = name;
+    liteMode = name !== 'high';
     initBolts();
     flickerTimers = new Array(q.numBolts).fill(0);
     resize();
   }
 
   function notePerf(now, dt){
-    if (liteMode || perfDone) return;
+    if (perfDone || qualityName === 'ultra') return;
     if (document.hidden){
       perfWarmupUntil = 0;
       perfFrames = 0;
@@ -718,8 +736,18 @@
     perfFrames++;
     if (dt > 32) perfLong++;
     if (perfFrames >= 40){
-      perfDone = true;
-      if (perfLong / perfFrames >= 0.3) enterLiteMode();
+      const tooSlow = perfLong / perfFrames >= 0.3;
+      if (tooSlow && qualityName === 'high'){
+        applyQuality(LITE_Q, 'lite');
+        perfWarmupUntil = now + 900;
+        perfFrames = 0;
+        perfLong = 0;
+      } else if (tooSlow && qualityName === 'lite'){
+        applyQuality(ULTRA_Q, 'ultra');
+        perfDone = true;
+      } else {
+        perfDone = true;
+      }
     }
   }
 
