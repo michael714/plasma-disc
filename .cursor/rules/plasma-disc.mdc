@@ -1,5 +1,5 @@
 ---
-description: Plasma Disc is a single-file static globe app — preserve audio, visuals, and GitHub Pages deploy
+description: Plasma Disc is a single-file static globe app — preserve audio, visuals, quality tiers (high/lite/ultra), and GitHub Pages deploy
 alwaysApply: true
 ---
 
@@ -32,6 +32,26 @@ sfxMasterGain.connect(audioCtx.destination);
 ## Visuals
 
 Keep fingertip attraction (bolts bend toward pointer/touch), concentric color bands, and fullscreen/TV-cast friendly UI (controls auto-hide).
+
+## Quality tiers (keep all three)
+
+Bolts use additive glow strokes, never canvas `shadowBlur` (CPU-heavy; it made a Pi 400 unusable). Do not CSS-blur the whole `<canvas>` — that softens the rim and color bands.
+
+| Tier | When | Look |
+| --- | --- | --- |
+| **high** | Default on capable machines | Full DPR (capped at 2), 13 bolts, branches, texture |
+| **lite** | ARM Linux / Raspberry / ≤2 cores, or frames stay slow | Same on-screen size as high; cap **backing-store** pixels (`maxBackingPx`), not CSS size. Keep branches, glow halo, and similar bolt count |
+| **ultra** | Only if lite still misses frame time | Smaller backing store, fewer bolts, no branches, ~30fps |
+
+URL overrides (keep these — they are how we compare without a Pi):
+
+- `https://michael714.github.io/plasma-disc/` — high
+- `…/plasma-disc/?lite` — lite
+- `…/plasma-disc/?ultra` — ultra
+
+Do not regress lite to a small, unbranched 7-bolt disc. That was tried and looked too plain next to high. Ultra is the sparse emergency tier.
+
+`canvas.dataset.quality` is `"high"` / `"lite"` / `"ultra"`. Auto-detect may drop high → lite → ultra; it must not bounce back up.
 
 ## Deploy
 
